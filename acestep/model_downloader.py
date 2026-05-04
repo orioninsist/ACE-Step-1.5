@@ -183,6 +183,7 @@ def _download_from_huggingface_internal(
         repo_id=repo_id,
         local_dir=str(local_dir),
         local_dir_use_symlinks="auto",
+        max_workers=1,
         token=token,
     )
 
@@ -227,7 +228,8 @@ def _smart_download(
         repo_id: Repository ID (same format for both HF and ModelScope)
         local_dir: Local directory to save the model
         token: HuggingFace token for private repos (optional)
-        prefer_source: Preferred download source ("huggingface", "modelscope", or None for auto-detect)
+        prefer_source: Preferred download source ("huggingface", "huggingface_only",
+            "modelscope", or None for auto-detect)
 
     Returns:
         Tuple of (success, message)
@@ -236,7 +238,7 @@ def _smart_download(
     local_dir.mkdir(parents=True, exist_ok=True)
 
     # Determine primary source
-    if prefer_source == "huggingface":
+    if prefer_source in ("huggingface", "huggingface_only"):
         use_huggingface_first = True
         logger.info("[Model Download] User preference: HuggingFace Hub")
     elif prefer_source == "modelscope":
@@ -254,6 +256,10 @@ def _smart_download(
             _download_from_huggingface_internal(repo_id, local_dir, token)
             return True, f"Successfully downloaded from HuggingFace: {repo_id}"
         except Exception as e:
+            if prefer_source == "huggingface_only":
+                error_msg = f"HuggingFace download failed and fallback is disabled: {e}"
+                logger.error(error_msg)
+                return False, error_msg
             logger.warning(f"[Model Download] HuggingFace download failed: {e}")
             logger.info("[Model Download] Falling back to ModelScope...")
             try:

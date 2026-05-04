@@ -6,17 +6,20 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 def _load_module():
     """Load model_downloader directly without importing heavy dependencies."""
+    fake_loguru = type(sys)("loguru")
+    fake_loguru.logger = MagicMock()
     spec = importlib.util.spec_from_file_location(
         "model_downloader",
         os.path.join(os.path.dirname(__file__), "model_downloader.py"),
     )
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    with patch.dict(sys.modules, {"loguru": fake_loguru}):
+        spec.loader.exec_module(mod)
     return mod
 
 
@@ -59,6 +62,53 @@ class TestGetProjectRoot(unittest.TestCase):
         # The current test is running with CWD == project root, so they happen to be equal
         # here; what matters is the returned path equals CWD, not the module file ancestor.
         self.assertEqual(result, Path(os.getcwd()))
+
+
+class TestHuggingFaceDownload(unittest.TestCase):
+    """Tests for HuggingFace download options."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_module()
+
+    def test_download_uses_single_worker(self):
+        """HuggingFace downloads run one file at a time to avoid parallel large transfers."""
+        snapshot_download = MagicMock()
+        fake_hub = type(sys)("huggingface_hub")
+        fake_hub.snapshot_download = snapshot_download
+
+        with patch.dict(sys.modules, {"huggingface_hub": fake_hub}):
+            self.mod._download_from_huggingface_internal(
+                "ACE-Step/example",
+                Path("/tmp/example"),
+                token="token",
+            )
+
+        snapshot_download.assert_called_once_with(
+            repo_id="ACE-Step/example",
+            local_dir="/tmp/example",
+            local_dir_use_symlinks="auto",
+            max_workers=1,
+            token="token",
+        )
+
+    def test_huggingface_only_disables_modelscope_fallback(self):
+        """huggingface_only returns an error instead of falling back to ModelScope."""
+        with patch.object(
+            self.mod,
+            "_download_from_huggingface_internal",
+            side_effect=RuntimeError("missing hf_transfer"),
+        ):
+            with patch.object(self.mod, "_download_from_modelscope_internal") as modelscope:
+                ok, msg = self.mod._smart_download(
+                    "ACE-Step/example",
+                    Path("/tmp/example"),
+                    prefer_source="huggingface_only",
+                )
+
+        self.assertFalse(ok)
+        self.assertIn("fallback is disabled", msg)
+        modelscope.assert_not_called()
 
 
 class TestGetCheckpointsDir(unittest.TestCase):
