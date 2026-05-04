@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 import torch
+import numpy as np
 from loguru import logger
 
 from acestep.gpu_config import get_effective_free_vram_gb
@@ -198,9 +199,29 @@ class GenerateMusicDecodeMixin:
                 del pred_latents_for_decode
                 if pred_wavs.dtype != torch.float32:
                     pred_wavs = pred_wavs.float()
+                # Per-sample peak normalization to avoid out-of-range values
                 peak = pred_wavs.abs().amax(dim=[1, 2], keepdim=True)
                 if torch.any(peak > 1.0):
                     pred_wavs = pred_wavs / peak.clamp(min=1.0)
+                # Sanitize NaN/Inf in waveforms produced by the VAE decode
+                try:
+                    if torch.isnan(pred_wavs).any() or torch.isinf(pred_wavs).any():
+                        nan_count = int(torch.isnan(pred_wavs).sum().item())
+                        inf_count = int(torch.isinf(pred_wavs).sum().item())
+                        logger.warning(f"[generate_music] VAE decode produced NaN/Inf in waveform (nan={nan_count}, inf={inf_count}), replacing with zeros")
+                        try:
+                            pred_wavs = torch.nan_to_num(pred_wavs, nan=0.0, posinf=0.0, neginf=0.0)
+                        except Exception:
+                            pred_np = pred_wavs.cpu().numpy()
+                            pred_np = np.nan_to_num(pred_np, nan=0.0, posinf=0.0, neginf=0.0)
+                            pred_wavs = torch.from_numpy(pred_np).to(dtype=torch.float32)
+                except Exception:
+                    pass
+                # Final safety clamp to [-1,1]
+                try:
+                    pred_wavs = pred_wavs.clamp(-1.0, 1.0)
+                except Exception:
+                    pass
                 self._empty_cache()
         gc.collect()
         self._empty_cache()

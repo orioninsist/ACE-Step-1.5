@@ -72,11 +72,11 @@ def apply_fade(
 def normalize_audio(audio_data: Union[torch.Tensor, np.ndarray], target_db: float = -1.0) -> Union[torch.Tensor, np.ndarray]:
     """
     Apply peak normalization to audio data.
-    
+
     Args:
         audio_data: Audio data as torch.Tensor or numpy.ndarray
         target_db: Target peak level in dB (default: -1.0)
-        
+
     Returns:
         Normalized audio data in the same format as input
     """
@@ -87,26 +87,26 @@ def normalize_audio(audio_data: Union[torch.Tensor, np.ndarray], target_db: floa
     else:
         audio = audio_data.copy()
         is_tensor = False
-        
+
     # Calculate current peak
     if is_tensor:
         peak = torch.max(torch.abs(audio))
     else:
         peak = np.max(np.abs(audio))
-        
+
     # Handle silence/near-silence to avoid division by zero or extreme gain
     if peak < 1e-6:
         return audio_data
-        
+
     # Convert target dB to linear amplitude
     target_amp = 10 ** (target_db / 20.0)
-    
+
     # Calculate needed gain
     gain = target_amp / peak
-    
+
     # Apply gain
     audio = audio * gain
-    
+
     return audio
 
 
@@ -118,11 +118,11 @@ class AudioSaver:
     MP3_ALLOWED_BITRATES = {"128k", "192k", "256k", "320k"}
     MP3_DEFAULT_SAMPLE_RATE = 48000
     MP3_ALLOWED_SAMPLE_RATES = {44100, 48000}
-    
+
     def __init__(self, default_format: str = "flac"):
         """
         Initialize audio saver
-        
+
         Args:
             default_format: Default save format ('flac', 'wav', 'mp3', 'wav32', 'opus', 'aac')
         """
@@ -130,7 +130,7 @@ class AudioSaver:
         if self.default_format not in ["flac", "wav", "mp3", "wav32", "opus", "aac"]:
             logger.warning(f"Unsupported format {default_format}, using 'flac'")
             self.default_format = "flac"
-    
+
     def _save_mp3(
         self,
         audio_tensor: torch.Tensor,
@@ -201,7 +201,7 @@ class AudioSaver:
     ) -> str:
         """
         Save audio data to file
-        
+
         Args:
             audio_data: Audio data, torch.Tensor [channels, samples] or numpy.ndarray
             output_path: Output file path (extension can be omitted)
@@ -210,7 +210,7 @@ class AudioSaver:
             channels_first: If True, tensor format is [channels, samples], else [samples, channels]
             mp3_bitrate: Optional MP3 bitrate override (128k/192k/256k/320k)
             mp3_sample_rate: Optional MP3 sample rate override (44100/48000)
-        
+
         Returns:
             Actual saved file path
         """
@@ -218,13 +218,13 @@ class AudioSaver:
         if format not in ["flac", "wav", "mp3", "wav32", "opus", "aac"]:
             logger.warning(f"Unsupported format {format}, using {self.default_format}")
             format = self.default_format
-        
+
         # Ensure output path has correct extension
         output_path = Path(output_path)
-        
+
         # Determine extension based on format
         ext = ".wav" if format == "wav32" else f".{format}"
-        
+
         if output_path.suffix.lower() not in ['.flac', '.wav', '.mp3', '.opus', '.aac', '.m4a']:
             output_path = output_path.with_suffix(ext)
         elif format == "wav32" and output_path.suffix.lower() == ".wav32":
@@ -233,7 +233,7 @@ class AudioSaver:
         elif format == "aac" and output_path.suffix.lower() == ".m4a":
              # Allow .m4a as valid extension for AAC (it's a container format for AAC)
              pass
-        
+
         # Convert to torch tensor
         if isinstance(audio_data, np.ndarray):
             if channels_first:
@@ -252,10 +252,40 @@ class AudioSaver:
                 # [samples, channels] -> [channels, samples]
                 if audio_tensor.shape[0] > audio_tensor.shape[1]:
                     audio_tensor = audio_tensor.T
-        
+
         # Ensure memory is contiguous
         audio_tensor = audio_tensor.contiguous()
-        
+
+        # Sanitize audio tensor: replace NaN/Inf, scale peaks to avoid clipping
+        try:
+            if torch.isnan(audio_tensor).any() or torch.isinf(audio_tensor).any():
+                logger.warning("[AudioSaver] Audio tensor contains NaN/Inf — replacing with zeros")
+                try:
+                    audio_tensor = torch.nan_to_num(audio_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+                except Exception:
+                    # Fallback for older torch versions
+                    audio_np = audio_tensor.cpu().numpy()
+                    audio_np = np.nan_to_num(audio_np, nan=0.0, posinf=0.0, neginf=0.0)
+                    audio_tensor = torch.from_numpy(audio_np).float()
+        except Exception:
+            # If the checks fail for unexpected reasons, continue to best-effort saving
+            pass
+
+        # Prevent extreme peaks: scale down to a safe maximum < 1.0 to avoid hard clipping
+        try:
+            peak = float(audio_tensor.abs().amax().item())
+            if peak > 1.0:
+                scale = 0.999 / max(peak, 1e-9)
+                audio_tensor = audio_tensor * scale
+        except Exception:
+            pass
+
+        # Final clamp to [-1.0, +1.0] and ensure contiguous memory
+        try:
+            audio_tensor = torch.clamp(audio_tensor, -1.0, 1.0).contiguous()
+        except Exception:
+            audio_tensor = audio_tensor.contiguous()
+
         # Select backend and save
         try:
             if format == "mp3":
@@ -282,10 +312,10 @@ class AudioSaver:
                 if format == "wav32":
                     try:
                         import soundfile as sf
-                        
+
                         # Use soundfile directly for 32-bit float
                         audio_np = audio_tensor.transpose(0, 1).numpy() # [channels, samples] -> [samples, channels]
-                        
+
                         # Explicitly specify format as WAV to avoid issues with extension detection or custom extensions
                         sf.write(str(output_path), audio_np, sample_rate, subtype='FLOAT', format='WAV')
                         logger.debug(f"[AudioSaver] Saved audio to {output_path} (wav32, {sample_rate}Hz)")
@@ -310,10 +340,10 @@ class AudioSaver:
                     sample_rate,
                     channels_first=True,
                 )
-            
+
             logger.debug(f"[AudioSaver] Saved audio to {output_path} ({format}, {sample_rate}Hz)")
             return str(output_path)
-            
+
         except Exception as e:
             if format == "mp3":
                 logger.error(f"[AudioSaver] MP3 export failed without fallback: {e}")
@@ -321,7 +351,7 @@ class AudioSaver:
             try:
                 import soundfile as sf
                 audio_np = audio_tensor.transpose(0, 1).numpy()  # -> [samples, channels]
-                
+
                 # Handle wav32 fallback formatting
                 if format == "wav32":
                     sf_format = "WAV"
@@ -329,14 +359,14 @@ class AudioSaver:
                 else:
                     sf_format = format.upper()
                     subtype = None
-                    
+
                 sf.write(str(output_path), audio_np, sample_rate, format=sf_format, subtype=subtype)
                 logger.debug(f"[AudioSaver] Fallback soundfile Saved audio to {output_path} ({format}, {sample_rate}Hz)")
                 return str(output_path)
             except Exception as inner_e:
                 logger.error(f"[AudioSaver] Failed to save audio: {e} -> Fallback failed: {inner_e}")
                 raise
-    
+
     def convert_audio(
         self,
         input_path: Union[str, Path],
@@ -348,7 +378,7 @@ class AudioSaver:
     ) -> str:
         """
         Convert audio format
-        
+
         Args:
             input_path: Input audio file path
             output_path: Output audio file path
@@ -362,13 +392,13 @@ class AudioSaver:
         """
         input_path = Path(input_path)
         output_path = Path(output_path)
-        
+
         if not input_path.exists():
             raise FileNotFoundError(f"Input file not found: {input_path}")
-        
+
         # Load audio
         audio_tensor, sample_rate = torchaudio.load(str(input_path))
-        
+
         # Save as new format
         output_path = self.save_audio(
             audio_tensor,
@@ -379,14 +409,14 @@ class AudioSaver:
             mp3_bitrate=mp3_bitrate,
             mp3_sample_rate=mp3_sample_rate,
         )
-        
+
         # Delete input file if needed
         if remove_input:
             input_path.unlink()
             logger.debug(f"[AudioSaver] Removed input file: {input_path}")
-        
+
         return output_path
-    
+
     def save_batch(
         self,
         audio_batch: Union[List[torch.Tensor], torch.Tensor],
@@ -400,7 +430,7 @@ class AudioSaver:
     ) -> List[str]:
         """
         Save audio batch
-        
+
         Args:
             audio_batch: Audio batch, List[tensor] or tensor [batch, channels, samples]
             output_dir: Output directory
@@ -416,7 +446,7 @@ class AudioSaver:
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Process batch
         if isinstance(audio_batch, torch.Tensor) and audio_batch.dim() == 3:
             # [batch, channels, samples]
@@ -425,7 +455,7 @@ class AudioSaver:
             audio_list = audio_batch
         else:
             audio_list = [audio_batch]
-        
+
         saved_paths = []
         for i, audio in enumerate(audio_list):
             output_path = output_dir / f"{file_prefix}_{i:04d}"
@@ -439,7 +469,7 @@ class AudioSaver:
                 mp3_sample_rate=mp3_sample_rate,
             )
             saved_paths.append(saved_path)
-        
+
         return saved_paths
 
 
@@ -506,16 +536,16 @@ def get_lora_weights_hash(dit_handler) -> str:
 def get_audio_file_hash(audio_file) -> str:
     """
     Get hash identifier for an audio file.
-    
+
     Args:
         audio_file: Path to audio file (str) or file-like object
-    
+
     Returns:
         Hash string or empty string
     """
     if audio_file is None:
         return ""
-    
+
     try:
         if isinstance(audio_file, str):
             if os.path.exists(audio_file):
@@ -533,14 +563,14 @@ def generate_uuid_from_params(params_dict) -> str:
     """
     Generate deterministic UUID from generation parameters.
     Same parameters will always generate the same UUID.
-    
+
     Args:
         params_dict: Dictionary of parameters
-    
+
     Returns:
         UUID string
     """
-    
+
     params_json = json.dumps(params_dict, sort_keys=True, ensure_ascii=False)
     hash_obj = hashlib.sha256(params_json.encode('utf-8'))
     hash_hex = hash_obj.hexdigest()
@@ -554,11 +584,11 @@ def generate_uuid_from_audio_data(
 ) -> str:
     """
     Generate UUID from audio data (for caching/deduplication)
-    
+
     Args:
         audio_data: Audio data
         seed: Optional seed value
-    
+
     Returns:
         UUID string
     """
@@ -567,14 +597,14 @@ def generate_uuid_from_audio_data(
         audio_np = audio_data.cpu().numpy()
     else:
         audio_np = audio_data
-    
+
     # Calculate data hash
     data_hash = hashlib.sha256(audio_np.tobytes()).hexdigest()
-    
+
     if seed is not None:
         combined = f"{data_hash}_{seed}"
         return hashlib.sha256(combined.encode()).hexdigest()
-    
+
     return data_hash
 
 
@@ -593,7 +623,7 @@ def save_audio(
 ) -> str:
     """
     Convenience function: save audio (using default configuration)
-    
+
     Args:
         audio_data: Audio data
         output_path: Output path
