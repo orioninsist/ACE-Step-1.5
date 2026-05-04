@@ -85,63 +85,14 @@ class VaeDecodeChunksMixin:
                 return self._decode_on_cpu(latents)
 
     def _tiled_decode_gpu(self, latents, stride, overlap, num_steps):
-        """Decode chunks and keep decoded audio tensors on GPU."""
-        decoded_audio_list = []
+        """Decode chunks and perform Overlap-Add (OLA) on GPU."""
+        bsz, _channels, latent_frames = latents.shape
         upsample_factor = None
+        final_audio = None
+        weight_sum = None
 
-        for i in tqdm(range(num_steps), desc="Decoding audio chunks", disable=self.disable_tqdm):
-            core_start = i * stride
-            core_end = min(core_start + stride, latents.shape[-1])
-            win_start = max(0, core_start - overlap)
-            win_end = min(latents.shape[-1], core_end + overlap)
-
-            latent_chunk = latents[:, :, win_start:win_end]
-            decoder_output = self.vae.decode(latent_chunk)
-            audio_chunk = decoder_output.sample
-            del decoder_output
-
-            if upsample_factor is None:
-                upsample_factor = audio_chunk.shape[-1] / latent_chunk.shape[-1]
-
-            added_start = core_start - win_start
-            trim_start = int(round(added_start * upsample_factor))
-            added_end = win_end - core_end
-            trim_end = int(round(added_end * upsample_factor))
-
-            audio_len = audio_chunk.shape[-1]
-            end_idx = audio_len - trim_end if trim_end > 0 else audio_len
-            audio_core = audio_chunk[:, :, trim_start:end_idx]
-            decoded_audio_list.append(audio_core)
-
-        return torch.cat(decoded_audio_list, dim=-1)
-
-    def _tiled_decode_offload_cpu(self, latents, bsz, latent_frames, stride, overlap, num_steps):
-        """Decode chunks on GPU and copy trimmed audio cores to a CPU buffer."""
-        first_core_end = min(stride, latent_frames)
-        first_win_end = min(latent_frames, first_core_end + overlap)
-        first_latent_chunk = latents[:, :, 0:first_win_end]
-        first_decoder_output = self.vae.decode(first_latent_chunk)
-        first_audio_chunk = first_decoder_output.sample
-        del first_decoder_output
-
-        upsample_factor = first_audio_chunk.shape[-1] / first_latent_chunk.shape[-1]
-        audio_channels = first_audio_chunk.shape[1]
-
-        total_audio_length = int(round(latent_frames * upsample_factor))
-        final_audio = torch.zeros(bsz, audio_channels, total_audio_length, dtype=first_audio_chunk.dtype, device="cpu")
-
-        first_added_end = first_win_end - first_core_end
-        first_trim_end = int(round(first_added_end * upsample_factor))
-        first_audio_len = first_audio_chunk.shape[-1]
-        first_end_idx = first_audio_len - first_trim_end if first_trim_end > 0 else first_audio_len
-
-        first_audio_core = first_audio_chunk[:, :, :first_end_idx]
-        audio_write_pos = first_audio_core.shape[-1]
-        final_audio[:, :, :audio_write_pos] = first_audio_core.cpu()
-
-        del first_audio_chunk, first_audio_core, first_latent_chunk
-
-        for i in tqdm(range(1, num_steps), desc="Decoding audio chunks", disable=self.disable_tqdm):
+        disable_tqdm = getattr(self, "disable_tqdm", False)
+        for i in tqdm(range(num_steps), desc="Decoding audio chunks", disable=disable_tqdm):
             core_start = i * stride
             core_end = min(core_start + stride, latent_frames)
             win_start = max(0, core_start - overlap)
@@ -152,19 +103,80 @@ class VaeDecodeChunksMixin:
             audio_chunk = decoder_output.sample
             del decoder_output
 
-            added_start = core_start - win_start
-            trim_start = int(round(added_start * upsample_factor))
-            added_end = win_end - core_end
-            trim_end = int(round(added_end * upsample_factor))
+            if upsample_factor is None:
+                upsample_factor = audio_chunk.shape[-1] / latent_chunk.shape[-1]
+                audio_channels = audio_chunk.shape[1]
+                total_audio_length = int(round(latent_frames * upsample_factor))
+                final_audio = torch.zeros(bsz, audio_channels, total_audio_length, dtype=audio_chunk.dtype, device=audio_chunk.device)
+                weight_sum = torch.zeros(1, 1, total_audio_length, dtype=audio_chunk.dtype, device=audio_chunk.device)
 
+            win_start_audio = int(round(win_start * upsample_factor))
+            
             audio_len = audio_chunk.shape[-1]
-            end_idx = audio_len - trim_end if trim_end > 0 else audio_len
-            audio_core = audio_chunk[:, :, trim_start:end_idx]
+            end_idx = min(win_start_audio + audio_len, total_audio_length)
+            actual_len = end_idx - win_start_audio
+            audio_chunk = audio_chunk[:, :, :actual_len]
 
-            core_len = audio_core.shape[-1]
-            final_audio[:, :, audio_write_pos : audio_write_pos + core_len] = audio_core.cpu()
-            audio_write_pos += core_len
+            window = torch.ones(1, 1, actual_len, dtype=audio_chunk.dtype, device=audio_chunk.device)
+            fade_in_latent = core_start - win_start
+            fade_out_latent = win_end - core_end
+            fade_in_audio = int(round(fade_in_latent * upsample_factor))
+            fade_out_audio = int(round(fade_out_latent * upsample_factor))
 
-            del audio_chunk, audio_core, latent_chunk
+            if fade_in_audio > 0:
+                window[..., :fade_in_audio] = torch.linspace(0, 1, fade_in_audio, dtype=audio_chunk.dtype, device=audio_chunk.device)
+            if fade_out_audio > 0:
+                window[..., -fade_out_audio:] = torch.linspace(1, 0, fade_out_audio, dtype=audio_chunk.dtype, device=audio_chunk.device)
 
-        return final_audio[:, :, :audio_write_pos]
+            final_audio[:, :, win_start_audio:end_idx] += audio_chunk * window
+            weight_sum[:, :, win_start_audio:end_idx] += window
+
+        return final_audio / weight_sum.clamp(min=1e-6)
+
+    def _tiled_decode_offload_cpu(self, latents, bsz, latent_frames, stride, overlap, num_steps):
+        """Decode chunks on GPU and perform Overlap-Add (OLA) on CPU."""
+        upsample_factor = None
+        final_audio = None
+        weight_sum = None
+
+        disable_tqdm = getattr(self, "disable_tqdm", False)
+        for i in tqdm(range(num_steps), desc="Decoding audio chunks", disable=disable_tqdm):
+            core_start = i * stride
+            core_end = min(core_start + stride, latent_frames)
+            win_start = max(0, core_start - overlap)
+            win_end = min(latent_frames, core_end + overlap)
+
+            latent_chunk = latents[:, :, win_start:win_end]
+            decoder_output = self.vae.decode(latent_chunk)
+            audio_chunk = decoder_output.sample
+            del decoder_output
+
+            if upsample_factor is None:
+                upsample_factor = audio_chunk.shape[-1] / latent_chunk.shape[-1]
+                audio_channels = audio_chunk.shape[1]
+                total_audio_length = int(round(latent_frames * upsample_factor))
+                final_audio = torch.zeros(bsz, audio_channels, total_audio_length, dtype=audio_chunk.dtype, device="cpu")
+                weight_sum = torch.zeros(1, 1, total_audio_length, dtype=audio_chunk.dtype, device="cpu")
+
+            win_start_audio = int(round(win_start * upsample_factor))
+            
+            audio_len = audio_chunk.shape[-1]
+            end_idx = min(win_start_audio + audio_len, total_audio_length)
+            actual_len = end_idx - win_start_audio
+            audio_chunk = audio_chunk[:, :, :actual_len].cpu()
+
+            window = torch.ones(1, 1, actual_len, dtype=audio_chunk.dtype, device="cpu")
+            fade_in_latent = core_start - win_start
+            fade_out_latent = win_end - core_end
+            fade_in_audio = int(round(fade_in_latent * upsample_factor))
+            fade_out_audio = int(round(fade_out_latent * upsample_factor))
+
+            if fade_in_audio > 0:
+                window[..., :fade_in_audio] = torch.linspace(0, 1, fade_in_audio, dtype=audio_chunk.dtype, device="cpu")
+            if fade_out_audio > 0:
+                window[..., -fade_out_audio:] = torch.linspace(1, 0, fade_out_audio, dtype=audio_chunk.dtype, device="cpu")
+
+            final_audio[:, :, win_start_audio:end_idx] += audio_chunk * window
+            weight_sum[:, :, win_start_audio:end_idx] += window
+
+        return final_audio / weight_sum.clamp(min=1e-6)
