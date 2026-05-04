@@ -10,6 +10,9 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 import requests
+import tempfile
+import subprocess
+import shutil
 
 
 def is_cjk(ch: str) -> bool:
@@ -85,6 +88,30 @@ def transcribe_elevenlabs(
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
+    # Preprocess audio: convert to 16 kHz mono WAV for more consistent ASR results
+    tmp_path = None
+    try:
+        tmp_fd = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp_path = tmp_fd.name
+        tmp_fd.close()
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            audio_path,
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-acodec",
+            "pcm_s16le",
+            tmp_path,
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        audio_to_send = tmp_path
+    except Exception:
+        audio_to_send = audio_path
+
     url = f"{api_url.rstrip('/')}/speech-to-text"
     headers = {"xi-api-key": api_key}
 
@@ -92,9 +119,16 @@ def transcribe_elevenlabs(
     if language:
         data["language_code"] = language
 
-    with open(audio_path, "rb") as f:
-        files = {"file": (Path(audio_path).name, f)}
-        response = requests.post(url, headers=headers, data=data, files=files, timeout=300)
+    try:
+        with open(audio_to_send, "rb") as f:
+            files = {"file": (Path(audio_to_send).name, f)}
+            response = requests.post(url, headers=headers, data=data, files=files, timeout=300)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
     if response.status_code != 200:
         error_msg = "Unknown error"
