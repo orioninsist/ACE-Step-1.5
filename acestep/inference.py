@@ -118,7 +118,7 @@ class GenerationParams:
 
     # Audio Post-Processing
     enable_normalization: bool = True
-    normalization_db: float = -1.0
+    normalization_db: float = -3.0
     fade_in_duration: float = 0.0   # Fade in duration in seconds. 0 = no fade in.
     fade_out_duration: float = 0.0  # Fade out duration in seconds. 0 = no fade out.
 

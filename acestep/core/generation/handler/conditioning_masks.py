@@ -70,7 +70,7 @@ class ConditioningMaskMixin:
             is_cover = (task_type == "cover") or has_code_hint
             is_covers.append(is_cover)
 
-        chunk_masks_tensor = torch.stack(chunk_masks)
+        chunk_masks_tensor = torch.stack(chunk_masks).to(torch.float32)
         if chunk_mask_modes:
             for i, mode in enumerate(chunk_mask_modes):
                 if mode == "auto":
