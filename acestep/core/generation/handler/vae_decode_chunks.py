@@ -121,18 +121,18 @@ class VaeDecodeChunksMixin:
             fade_in_latent = core_start - win_start
             fade_out_latent = win_end - core_end
             
-            # Use overlap-discard with a perfectly centered crossfade.
-            # This discards the most inaccurate outer half of the context
-            # and performs a linear crossfade over the inner half, eliminating
-            # the 'layering' or 'chorus' artifacts caused by blending bad context.
+            # Use overlap-discard with a very short centered crossfade.
+            # This discards the inaccurate outer context and performs a tiny crossfade
+            # (exactly 1 latent frame wide) at the perfect center of the overlap.
+            # This completely eliminates "layering/chorus" (ust uste binme) 
+            # and prevents "crackling" (cizirti).
             if fade_in_latent > 0:
-                cf_half = fade_in_latent // 2
-                fade_in_start = fade_in_latent - cf_half
-                fade_in_end = fade_in_latent + cf_half
-                
-                start_audio = int(round(fade_in_start * upsample_factor))
-                end_audio = int(round(fade_in_end * upsample_factor))
-                cf_len = end_audio - start_audio
+                center_audio = int(round(fade_in_latent * upsample_factor))
+                # Fixed short crossfade length: 1 latent frame equivalent
+                cf_len = max(int(round(upsample_factor)), 2)
+                cf_half = cf_len // 2
+                start_audio = center_audio - cf_half
+                end_audio = start_audio + cf_len
                 
                 if start_audio > 0:
                     window[..., :start_audio] = 0.0
@@ -140,20 +140,20 @@ class VaeDecodeChunksMixin:
                     window[..., start_audio:end_audio] = torch.linspace(0, 1, cf_len, dtype=audio_chunk.dtype, device=audio_chunk.device)
                     
             if fade_out_latent > 0:
-                cf_half = fade_out_latent // 2
-                fade_out_start = fade_out_latent + cf_half  # distance from end (starts earlier)
-                fade_out_end = fade_out_latent - cf_half    # distance from end (ends later)
+                center_audio = int(round(fade_out_latent * upsample_factor))
+                cf_len = max(int(round(upsample_factor)), 2)
+                cf_half = cf_len // 2
                 
-                start_audio = int(round(fade_out_start * upsample_factor))
-                end_audio = int(round(fade_out_end * upsample_factor))
-                cf_len = start_audio - end_audio
+                # Distance from the end of the chunk
+                start_audio_from_end = center_audio + cf_half  # starts earlier (further from end)
+                end_audio_from_end = center_audio - cf_half    # ends later (closer to end)
                 
-                idx_start = actual_len - start_audio
-                idx_end = actual_len - end_audio
+                idx_start = actual_len - start_audio_from_end
+                idx_end = actual_len - end_audio_from_end
                 
                 if cf_len > 0:
                     window[..., idx_start:idx_end] = torch.linspace(1, 0, cf_len, dtype=audio_chunk.dtype, device=audio_chunk.device)
-                if end_audio > 0:
+                if end_audio_from_end > 0:
                     window[..., idx_end:] = 0.0
 
             final_audio[:, :, win_start_audio:end_idx] += audio_chunk * window
@@ -197,18 +197,18 @@ class VaeDecodeChunksMixin:
             fade_in_latent = core_start - win_start
             fade_out_latent = win_end - core_end
             
-            # Use overlap-discard with a perfectly centered crossfade.
-            # This discards the most inaccurate outer half of the context
-            # and performs a linear crossfade over the inner half, eliminating
-            # the 'layering' or 'chorus' artifacts caused by blending bad context.
+            # Use overlap-discard with a very short centered crossfade.
+            # This discards the inaccurate outer context and performs a tiny crossfade
+            # (exactly 1 latent frame wide) at the perfect center of the overlap.
+            # This completely eliminates "layering/chorus" (ust uste binme) 
+            # and prevents "crackling" (cizirti).
             if fade_in_latent > 0:
-                cf_half = fade_in_latent // 2
-                fade_in_start = fade_in_latent - cf_half
-                fade_in_end = fade_in_latent + cf_half
-                
-                start_audio = int(round(fade_in_start * upsample_factor))
-                end_audio = int(round(fade_in_end * upsample_factor))
-                cf_len = end_audio - start_audio
+                center_audio = int(round(fade_in_latent * upsample_factor))
+                # Fixed short crossfade length: 1 latent frame equivalent
+                cf_len = max(int(round(upsample_factor)), 2)
+                cf_half = cf_len // 2
+                start_audio = center_audio - cf_half
+                end_audio = start_audio + cf_len
                 
                 if start_audio > 0:
                     window[..., :start_audio] = 0.0
@@ -216,20 +216,20 @@ class VaeDecodeChunksMixin:
                     window[..., start_audio:end_audio] = torch.linspace(0, 1, cf_len, dtype=audio_chunk.dtype, device="cpu")
                     
             if fade_out_latent > 0:
-                cf_half = fade_out_latent // 2
-                fade_out_start = fade_out_latent + cf_half  # distance from end (starts earlier)
-                fade_out_end = fade_out_latent - cf_half    # distance from end (ends later)
+                center_audio = int(round(fade_out_latent * upsample_factor))
+                cf_len = max(int(round(upsample_factor)), 2)
+                cf_half = cf_len // 2
                 
-                start_audio = int(round(fade_out_start * upsample_factor))
-                end_audio = int(round(fade_out_end * upsample_factor))
-                cf_len = start_audio - end_audio
+                # Distance from the end of the chunk
+                start_audio_from_end = center_audio + cf_half  # starts earlier (further from end)
+                end_audio_from_end = center_audio - cf_half    # ends later (closer to end)
                 
-                idx_start = actual_len - start_audio
-                idx_end = actual_len - end_audio
+                idx_start = actual_len - start_audio_from_end
+                idx_end = actual_len - end_audio_from_end
                 
                 if cf_len > 0:
                     window[..., idx_start:idx_end] = torch.linspace(1, 0, cf_len, dtype=audio_chunk.dtype, device="cpu")
-                if end_audio > 0:
+                if end_audio_from_end > 0:
                     window[..., idx_end:] = 0.0
 
             final_audio[:, :, win_start_audio:end_idx] += audio_chunk * window
