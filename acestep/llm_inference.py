@@ -2866,6 +2866,8 @@ class LLMHandler:
                         metadata['language'] = value.strip()
                     elif current_key == 'timesignature':
                         metadata['timesignature'] = value.strip()
+                    elif current_key == 'lyrics':
+                        metadata['lyrics'] = value.strip()
 
                 current_key = None
                 current_value_lines = []
@@ -2883,7 +2885,7 @@ class LLMHandler:
                     remaining_line = line
                     
                     # Known metadata keys for splitting merged lines
-                    meta_keys = ['bpm', 'caption', 'duration', 'genres', 'keyscale', 'language', 'timesignature']
+                    meta_keys = ['bpm', 'caption', 'duration', 'genres', 'keyscale', 'language', 'timesignature', 'lyrics']
                     
                     while ':' in remaining_line:
                         # Find the first colon
@@ -2936,8 +2938,8 @@ class LLMHandler:
                             if current_key:
                                 current_value_lines.append(remaining_line)
                             remaining_line = "" # End while loop
-                elif line.startswith(' ') or line.startswith('\t'):
-                    # Continuation line (YAML multi-line value)
+                else:
+                    # Continuation line (YAML multi-line value or text without leading space)
                     if current_key:
                         current_value_lines.append(line)
 
