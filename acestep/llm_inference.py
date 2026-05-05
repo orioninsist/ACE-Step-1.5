@@ -2841,7 +2841,7 @@ class LLMHandler:
             def save_current_field():
                 """Save the accumulated field value"""
                 nonlocal current_key, current_value_lines
-                if current_key and current_value_lines:
+                if current_key:
                     # Join multi-line value
                     value = '\n'.join(current_value_lines)
 
