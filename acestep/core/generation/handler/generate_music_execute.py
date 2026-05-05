@@ -74,17 +74,13 @@ class GenerateMusicExecuteMixin:
         _error: Dict[str, BaseException] = {}
 
         def _service_target():
-            print(f"\n--- [DEBUG] GENERATION INPUTS ---")
-            print(f"   Task Type: {task_type}")
-            print(f"   Captions[0]: {service_inputs['captions_batch'][0]}")
-            print(f"   Lyrics[0]: {service_inputs['lyrics_batch'][0]}")
-            print(f"   Metas[0]: {service_inputs['metas_batch'][0]}")
-            print(f"   Guidance Scale: {guidance_scale}")
-            print(f"   Inference Steps: {inference_steps}")
-            print(f"   Has Audio Codes: {service_inputs['audio_code_hints_batch'] is not None}")
-            if service_inputs['audio_code_hints_batch']:
-                print(f"   Audio Codes Length: {len(str(service_inputs['audio_code_hints_batch'][0]))}")
-            print(f"--- [DEBUG] END ---\n")
+            # Debug info
+            logger.info("--- [DEBUG] GENERATION INPUTS ---")
+            logger.info(f"Task: {task_type}")
+            logger.info(f"Caption: {service_inputs['captions_batch'][0]}")
+            logger.info(f"Lyrics: {service_inputs['lyrics_batch'][0][:50]}...")
+            logger.info(f"Guidance: {guidance_scale}")
+            logger.info("--- [DEBUG] END ---")
             try:
                 _result["outputs"] = self.service_generate(
                     captions=service_inputs["captions_batch"],
