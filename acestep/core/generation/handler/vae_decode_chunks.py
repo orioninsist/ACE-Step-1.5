@@ -128,8 +128,9 @@ class VaeDecodeChunksMixin:
             # and prevents "crackling" (cizirti).
             if fade_in_latent > 0:
                 center_audio = int(round(fade_in_latent * upsample_factor))
-                # Fixed short crossfade length: 1 latent frame equivalent
-                cf_len = max(int(round(upsample_factor)), 2)
+                # Use a larger crossfade length (8 latent frames) to smooth out 
+                # boundary transitions and eliminate rhythmic thumping artifacts.
+                cf_len = max(int(round(upsample_factor * 8)), 2)
                 cf_half = cf_len // 2
                 start_audio = center_audio - cf_half
                 end_audio = start_audio + cf_len
@@ -141,7 +142,7 @@ class VaeDecodeChunksMixin:
                     
             if fade_out_latent > 0:
                 center_audio = int(round(fade_out_latent * upsample_factor))
-                cf_len = max(int(round(upsample_factor)), 2)
+                cf_len = max(int(round(upsample_factor * 8)), 2)
                 cf_half = cf_len // 2
                 
                 # Distance from the end of the chunk
@@ -204,8 +205,9 @@ class VaeDecodeChunksMixin:
             # and prevents "crackling" (cizirti).
             if fade_in_latent > 0:
                 center_audio = int(round(fade_in_latent * upsample_factor))
-                # Fixed short crossfade length: 1 latent frame equivalent
-                cf_len = max(int(round(upsample_factor)), 2)
+                # Use a larger crossfade length (8 latent frames) to smooth out 
+                # boundary transitions and eliminate rhythmic thumping artifacts.
+                cf_len = max(int(round(upsample_factor * 8)), 2)
                 cf_half = cf_len // 2
                 start_audio = center_audio - cf_half
                 end_audio = start_audio + cf_len
@@ -217,7 +219,7 @@ class VaeDecodeChunksMixin:
                     
             if fade_out_latent > 0:
                 center_audio = int(round(fade_out_latent * upsample_factor))
-                cf_len = max(int(round(upsample_factor)), 2)
+                cf_len = max(int(round(upsample_factor * 8)), 2)
                 cf_half = cf_len // 2
                 
                 # Distance from the end of the chunk

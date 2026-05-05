@@ -247,7 +247,7 @@ class MetadataConstrainedLogitsProcessor(LogitsProcessor):
             FSMState.THINK_TAG: "<think>",
             FSMState.NEWLINE_AFTER_THINK: "\n",
             FSMState.BPM_NAME: "bpm:",
-            FSMState.CAPTION_NAME: "caption:",
+            FSMState.CAPTION_NAME: "caption: ",
             FSMState.DURATION_NAME: "duration:",
             FSMState.GENRES_NAME: "genres:",
             FSMState.KEYSCALE_NAME: "keyscale:",

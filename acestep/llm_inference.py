@@ -2876,18 +2876,66 @@ class LLMHandler:
                     continue
 
                 # Check if this is a new field (no leading spaces and contains ':')
+                # OR if it's a merged field on the same line (e.g. "caption:duration: 95")
                 if line and not line[0].isspace() and ':' in line:
-                    # Save previous field if any
-                    save_current_field()
-
-                    # Parse new field
-                    parts = line.split(':', 1)
-                    if len(parts) == 2:
-                        current_key = parts[0].strip().lower()
-                        # First line of value (after colon)
-                        first_value = parts[1]
-                        if first_value.strip():
-                            current_value_lines.append(first_value)
+                    # Parse all fields on this line (supports "key1: value1 key2: value2" 
+                    # but specifically handles the common "key1:key2: value2" failure mode)
+                    remaining_line = line
+                    
+                    # Known metadata keys for splitting merged lines
+                    meta_keys = ['bpm', 'caption', 'duration', 'genres', 'keyscale', 'language', 'timesignature']
+                    
+                    while ':' in remaining_line:
+                        # Find the first colon
+                        colon_idx = remaining_line.find(':')
+                        potential_key = remaining_line[:colon_idx].strip().lower()
+                        
+                        # If potential_key ends with a known key (e.g. "something caption")
+                        # we should try to extract the key
+                        matched_key = None
+                        for k in meta_keys:
+                            if potential_key == k or potential_key.endswith(' ' + k):
+                                matched_key = k
+                                break
+                        
+                        if matched_key:
+                            # Save previous field if any
+                            save_current_field()
+                            current_key = matched_key
+                            remaining_line = remaining_line[colon_idx + 1:].strip()
+                            
+                            # Check if next field is immediately present on the same line
+                            # We look for "key:" where key is in meta_keys
+                            next_key_idx = -1
+                            next_matched_key = None
+                            for k in meta_keys:
+                                # Look for " key:" or "key:" at the start of remaining_line
+                                search_pattern = k + ":"
+                                pos = remaining_line.find(search_pattern)
+                                if pos != -1:
+                                    if pos == 0 or remaining_line[pos-1].isspace():
+                                        if next_key_idx == -1 or pos < next_key_idx:
+                                            next_key_idx = pos
+                                            next_matched_key = k
+                            
+                            if next_key_idx != -1:
+                                # We found another field on the same line!
+                                # Extract value for current field
+                                val = remaining_line[:next_key_idx].strip()
+                                if val:
+                                    current_value_lines.append(val)
+                                # Continue while loop with the rest of the line
+                                remaining_line = remaining_line[next_key_idx:]
+                            else:
+                                # No more fields on this line, the rest is the value
+                                if remaining_line:
+                                    current_value_lines.append(remaining_line)
+                                remaining_line = "" # End while loop
+                        else:
+                            # Not a known key, treat as continuation of previous field value or garbage
+                            if current_key:
+                                current_value_lines.append(remaining_line)
+                            remaining_line = "" # End while loop
                 elif line.startswith(' ') or line.startswith('\t'):
                     # Continuation line (YAML multi-line value)
                     if current_key:
